@@ -32,7 +32,16 @@ build:
 	@env LC_ALL=C.UTF-8 find $(BUILDDIR) -mindepth 1 -execdir touch -hcd '@0' '{}' +
 
 install:
-	@mkdir -p $(DESTDIR)/usr $(DESTDIR)/scripts $(DESTDIR)/etc
+	@mkdir -p \
+		$(DESTDIR)/usr \
+		$(DESTDIR)/scripts \
+		$(DESTDIR)/etc \
+		$(DESTDIR)/dev \
+		$(DESTDIR)/proc \
+		$(DESTDIR)/sys \
+		$(DESTDIR)/mnt \
+		$(DESTDIR)/android
+
 	@cp -t $(DESTDIR)/ -r \
 		$(BUILDDIR)/usr \
 		$(BUILDDIR)/scripts \
