@@ -33,14 +33,16 @@ build:
 
 install:
 	@mkdir -p \
-		$(DESTDIR)/usr \
+		$(DESTDIR)/ \
+		$(DESTDIR)/android \
 		$(DESTDIR)/scripts \
-		$(DESTDIR)/etc \
-		$(DESTDIR)/dev \
-		$(DESTDIR)/proc \
-		$(DESTDIR)/sys \
 		$(DESTDIR)/mnt \
-		$(DESTDIR)/android
+		$(DESTDIR)/dev \
+		$(DESTDIR)/etc \
+		$(DESTDIR)/proc \
+		$(DESTDIR)/usr/lib64 \
+		$(DESTDIR)/sys \
+		$(DESTDIR)/tmp \
 
 	@cp -t $(DESTDIR)/ -r \
 		$(BUILDDIR)/usr \
@@ -48,15 +50,13 @@ install:
 		$(BUILDDIR)/etc \
 		$(BUILDDIR)/init
 
-	@if [ ! -h $(DESTDIR)/bin ]; then \
-		ln -s usr/bin $(DESTDIR)/bin; \
-	fi
-
-	@if [ ! -h $(DESTDIR)/lib ]; then \
-		ln -s usr/lib $(DESTDIR)/lib; \
-	fi
+	@for dir in bin lib lib64; do \
+		if [ ! -h $(DESTDIR)/$$dir ]; then \
+			ln -s usr/$$dir $(DESTDIR)/$$dir; \
+		fi; \
+	done
 
 clean:
 	@rm -rf $(BUILDDIR)
 
-.PHONY: all install uninstall clean
+.PHONY: all install clean
