@@ -124,18 +124,8 @@ if test x"$HAS_CTTY" != x"Yes"; then
 	busybox mount -t proc proc /proc
 	busybox mount -t sysfs sys /sys
 	busybox mount -t tmpfs tmpfs /tmp
+
 	# let busybox install all applets as symlinks
-
-	# # First let Docker busybox install applet
-	# busybox.docker --install -s /bin
-	# # Then we get Debian busybox applets in /tmp
-	# # and move it back to /bin
-	# mkdir /tmp/busybox_bin && busybox --install -s /tmp/busybox_bin && mv /tmp/busybox_bin/* /bin
-	# # remove busybox fdisk & mke2fs
-	# rm /bin/fdisk
-	# rm /bin/mke2fs
-
-	# busybox itself is enough already
 	busybox --install -s /bin/
 
 	# spawn shells on tty 2 and 3 if debug or install
@@ -195,26 +185,10 @@ try_mount() {
 	esac
 }
 
-search_root() {
-	if [ "$ISO" ] && [ -f "/mnt/$ISO" ]; then
-		mount -o loop "/mnt/$ISO" /mnt
-	fi
-
-	if [ x"$SEARCH_SYSTEM" != 'xYes' ]; then
-		test -e "/mnt/$SRC/$file_search_root"
-	else
-		# Traditional rootfs search
-		test -n "$(busybox find "/mnt/$SRC" -type f -maxdepth 1 -name "system$SLOT.?fs")" ||
-			test -e "/mnt/$SRC/system$SLOT.img" ||
-			test -s "/mnt/$SRC/system$SLOT/system/build.prop" ||
-			test -s "/mnt/$SRC/system/build.prop"
-	fi || return 1
-}
-
 check_sysroot() {
-	local dev=$1
+	local dev=$1 file=$2
 
-	if try_mount ro "$dev" /mnt && search_root; then
+	if try_mount ro "$dev" /mnt && [ -e /mnt/"$SRC"/$file ]; then
 		ROOT=$dev
 		return 0
 	fi
@@ -226,33 +200,37 @@ check_sysroot() {
 	return 1
 }
 
-find_sysroot() {
-	echo "Detecting Android-x86..."
-	echo
-	echo "If it took too long to detect, reboot and check your installation folder"
-	echo
-
-	for _ in $(seq 0 $1); do
+find_sysroot_by_file() {
+	local file=$1 iter=$2 dev
+	for _ in $(seq 0 $iter); do
 		for dev in /dev/[hmnsvx][dmrv][0-9a-z]*; do
 			test -e "$dev" || continue
+			echo -e "Scanning $dev...\n"
 
-			echo "Scanning $dev..."
-			echo
-
-			check_sysroot "$dev" || continue
-
-			echo "Found at $dev"
-			echo
-
+			check_sysroot "$dev" "$file" || continue
+			echo -e "Found at $dev\n"
 			return 0
 		done
 		sleep 5
 		echo -n .
 	done
 
-	echo "Detecting failed after $1 iterations!"
-	echo
+	echo -e "Detecting failed after $iter iterations for file $file!\n"
+	return 1
+}
 
+sysroot_search() {
+	cat <<EOF
+Detecting Android-x86...
+
+If it took too long to detect, reboot and check your installation folder
+
+EOF
+	local file
+	for file in $ROOT_SEARCH_FILES; do
+		find_sysroot_by_file "$file" 5 && return 0
+		sleep 5
+	done
 	return 1
 }
 
@@ -262,9 +240,8 @@ remount_rw() {
 	mount -o remount,rw foo /mnt
 }
 
-debug_shell() {
-	busybox sh 2>&1
-}
+# Debug shell no longer takes arguments anymore
+debug_shell() { busybox sh 2>&1; }
 
 setup_loop() {
 	local base target
@@ -289,15 +266,12 @@ setup_loop() {
 }
 
 setup_ab_loops() {
-	if [ -z "$SLOT" ]; then
-		return
-	fi
+	[ "$SLOT" ] || return
 
-	if [ "$SLOT" = "_a" ]; then
-		leftover_slot=_b
-	else
+	local leftover_slot
+	[ "$SLOT" = "_a" ] &&
+		leftover_slot=_b ||
 		leftover_slot=_a
-	fi
 
 	ln_path=/dev/block/by-name
 
@@ -309,11 +283,6 @@ setup_ab_loops() {
 	ln -s "$(setup_loop "/mnt/$SRC/misc.img")" $ln_path/misc
 }
 
-echo "Detecting Android-x86..."
-echo
-echo "If it took too long to detect, reboot and check your installation folder"
-echo
-
 [ -z "$SRC" ] && [ "$BOOT_IMAGE" ] &&
 	# Avoid GRUB partition prefix
 	SRC=$(dirname "${BOOT_IMAGE#/}")
@@ -322,10 +291,7 @@ echo
 for c in $(cat /proc/cmdline); do
 	case "$c" in
 	iso-scan/filename=*) ISO=${c##*=} ;;
-	androidboot.slot_suffix=*)
-		SLOT=${c##*=}
-		file_search_root=fstab.android
-		;;
+	androidboot.slot_suffix=*) SLOT=${c##*=} ;;
 	# We may no longer need EFIDISK and EFIDIR as we already have fstab
 	androidboot.efidisk=*) EFIDISK=$(find_device "${c##*=}") ;;
 	androidboot.efidir=*) EFIDIR=${c##*=} ;;
@@ -333,34 +299,30 @@ for c in $(cat /proc/cmdline); do
 	esac
 done
 
-if [ "$INSTALL" ] || grep 'androidboot.live=true' /proc/cmdline; then
-	# Default to 'install.sfs' as the installer image is squashfs-compressed
-	file_search_root=${INSTALL:-install.sfs}
-elif [ -z "$file_search_root" ]; then
-	file_search_root=${BOOT_IMAGE#/}
-fi
-
 ROOT=$(find_device "$ROOT")
 
 cd /
 # If there's no ROOT= specified, try to find one for 5 times
-if [ -z "$ROOT" ]; then
-	if ! find_sysroot 5; then
-		# In case $file_search_root could not be found on any partition,
-		# try to search where kernel image is
-		file_search_root=${BOOT_IMAGE#/}
-		if ! find_sysroot 5; then
-			# In case it still fails, do traditional system search
-			SEARCH_SYSTEM=Yes
-			find_sysroot 5
+if [ ! "$ROOT" ] || ! try_mount rw "$ROOT" /mnt; then
+	if [ "$ISO" ]; then
+		ROOT_SEARCH_FILES="$ISO"
+	else
+		ROOT_SEARCH_FILES="fstab.android ${BOOT_IMAGE#/} system$SLOT.?fs system$SLOT.img system$SLOT/system/build.prop system/build.prop"
+
+		# If is live/install mode, prior to search for $INSTALL image, default to install.sfs
+		if [ "$INSTALL" ] || grep -q 'androidboot.live=true' /proc/cmdline; then
+			ROOT_SEARCH_FILES="${INSTALL:-install.sfs} $ROOT_SEARCH_FILES"
 		fi
 	fi
-else
-	check_sysroot "$ROOT"
+	sysroot_search
 fi || debug_shell fatal-err
 
 remount_rw
 
+[ "$ISO" ] && mount -o loop "/mnt/$SRC/$ISO" /mnt
+
+# If install is specified, but no install image found (probably wont happend)
+# Will be deprecated
 if [ "$INSTALL" ] && [ ! -f "/mnt/$SRC/$INSTALL" ]; then
 	debug_shell fatal-err
 fi
@@ -385,7 +347,7 @@ process_fstab
 cd /android
 
 ln -s android/system /
-ln -s ../system/lib/firmware ../system/lib/modules /lib
+ln -s ../vendor/lib/firmware ../system/lib/modules /lib
 mkdir -p /lib/modules
 ln -s ../system/lib/modules /lib/modules/"$(uname -r)"
 
@@ -433,8 +395,6 @@ if [ 0"$DEBUG" -gt 1 ]; then
 	debug_shell debug-late
 fi
 
-# [ "$DEBUG" ] && SWITCH=${SWITCH:-chroot}
-
 [ "$INSTALL" ] && start_install
 
 # We must disable mdev before switching to Android
@@ -451,8 +411,10 @@ exec ${SWITCH:-switch_root} /android /init
 
 # avoid kernel panic
 while :; do
-	echo
-	echo '	Android-x86 console shell. Use only in emergencies.'
-	echo
+	cat <<EOF
+
+	Android-x86 console shell. Use only in emergencies.'
+
+EOF
 	debug_shell fatal-err
 done
